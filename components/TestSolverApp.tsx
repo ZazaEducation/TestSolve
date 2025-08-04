@@ -8,6 +8,7 @@ interface Answer {
   question: string;
   answer: string;
   confidence: number;
+  reasoning?: string;
 }
 
 interface ProcessingResult {
@@ -158,7 +159,13 @@ export default function TestSolverApp() {
                         </p>
                         <div className="bg-white border border-green-200 rounded p-3">
                           <p className="text-gray-800 font-medium">Answer:</p>
-                          <p className="text-gray-700 mt-1">{answer.answer}</p>
+                          <p className="text-gray-700 mt-1 text-lg font-semibold">{answer.answer}</p>
+                          {answer.reasoning && (
+                            <div className="mt-3 pt-3 border-t border-gray-100">
+                              <p className="text-gray-600 text-sm font-medium">Reasoning:</p>
+                              <p className="text-gray-600 text-sm mt-1">{answer.reasoning}</p>
+                            </div>
+                          )}
                         </div>
                         <div className="mt-2 text-sm text-gray-600">
                           Confidence: {Math.round(answer.confidence * 100)}%
