@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Upload, Camera, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { Upload, Camera, Loader2, CheckCircle, AlertCircle, FileText } from 'lucide-react';
 import Image from 'next/image';
 
 interface Answer {
@@ -29,11 +29,17 @@ export default function TestSolverApp() {
       setSelectedImage(file);
       setResults(null);
       
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        setImagePreview(e.target?.result as string);
-      };
-      reader.readAsDataURL(file);
+      // Only create preview for image files
+      if (file.type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          setImagePreview(e.target?.result as string);
+        };
+        reader.readAsDataURL(file);
+      } else {
+        // For PDFs, set a placeholder preview
+        setImagePreview('pdf');
+      }
     }
   };
 
@@ -82,34 +88,47 @@ export default function TestSolverApp() {
                   </div>
                 </div>
                 <h3 className="text-lg font-medium text-gray-900 mb-2">
-                  Upload Test Image
+                  Upload Test File
                 </h3>
                 <p className="text-gray-500 mb-4">
-                  Select an image containing test questions to solve
+                  Select an image (JPG, PNG) or PDF containing test questions to solve
+                </p>
+                <p className="text-sm text-gray-400 mb-4">
+                  ✓ Images: Screenshots, photos of tests, handwritten questions<br/>
+                  ✓ PDFs: Digital tests, exams, quizzes, homework assignments
                 </p>
                 <label className="cursor-pointer">
                   <input
                     type="file"
-                    accept="image/*"
+                    accept="image/*,application/pdf"
                     onChange={handleImageSelect}
                     className="hidden"
                   />
                   <span className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors">
                     <Camera className="w-4 h-4 mr-2" />
-                    Choose Image
+                    Choose File
                   </span>
                 </label>
               </div>
             ) : (
               <div>
                 <div className="mb-4">
-                  <Image
-                    src={imagePreview}
-                    alt="Selected test image"
-                    width={400}
-                    height={300}
-                    className="mx-auto rounded-lg shadow-md max-h-96 object-contain"
-                  />
+                  {imagePreview === 'pdf' ? (
+                    <div className="flex flex-col items-center justify-center py-8 px-4 bg-blue-50 rounded-lg border-2 border-blue-200">
+                      <FileText className="w-16 h-16 text-blue-500 mb-2" />
+                      <p className="text-gray-700 font-medium">{selectedImage?.name}</p>
+                      <p className="text-blue-600 text-sm">PDF test document ready for processing</p>
+                      <p className="text-gray-500 text-xs mt-1">Will extract and solve all questions automatically</p>
+                    </div>
+                  ) : (
+                    <Image
+                      src={imagePreview}
+                      alt="Selected test file"
+                      width={400}
+                      height={300}
+                      className="mx-auto rounded-lg shadow-md max-h-96 object-contain"
+                    />
+                  )}
                 </div>
                 <div className="flex justify-center gap-4">
                   <button
