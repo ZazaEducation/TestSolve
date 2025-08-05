@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RTL Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            line-height: 1.6;
+        }
+        .test-container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .test-case {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .question-text {
+            unicode-bidi: isolate;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            line-height: 1.6;
+            margin: 10px 0;
+            padding: 10px;
+            background: #f5f5f5;
+            border-radius: 3px;
+        }
+        .answer-text {
+            unicode-bidi: isolate;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            line-height: 1.6;
+            margin: 10px 0;
+            padding: 10px;
+            background: #e8f5e8;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <div class="test-container">
+        <h1>RTL Language Support Test</h1>
+        
+        <div class="test-case">
+            <h3>Hebrew Text (RTL)</h3>
+            <div class="question-text" style="direction: rtl; text-align: right;">
+                מהו השם של הבירה של ישראל?
+            </div>
+            <div class="answer-text" style="direction: rtl; text-align: right;">
+                ירושלים היא בירת ישראל
+            </div>
+        </div>
+
+        <div class="test-case">
+            <h3>Arabic Text (RTL)</h3>
+            <div class="question-text" style="direction: rtl; text-align: right;">
+                ما هي عاصمة مصر؟
+            </div>
+            <div class="answer-text" style="direction: rtl; text-align: right;">
+                القاهرة هي عاصمة مصر
+            </div>
+        </div>
+
+        <div class="test-case">
+            <h3>English Text (LTR)</h3>
+            <div class="question-text" style="direction: ltr; text-align: left;">
+                What is the capital of France?
+            </div>
+            <div class="answer-text" style="direction: ltr; text-align: left;">
+                Paris is the capital of France
+            </div>
+        </div>
+
+        <div class="test-case">
+            <h3>Mixed Content</h3>
+            <div class="question-text" style="unicode-bidi: plaintext;">
+                מהו השם של הבירה של France?
+            </div>
+            <div class="answer-text" style="unicode-bidi: plaintext;">
+                Paris היא בירת France
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Test the language detection functions
+        console.log('Testing RTL detection...');
+        
+        // Simulate the detection functions
+        function detectRTL(text) {
+            const rtlRegex = /[\u0590-\u05FF\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u200F\u202E]/;
+            return rtlRegex.test(text);
+        }
+        
+        function getTextDirection(text) {
+            return detectRTL(text) ? 'rtl' : 'ltr';
+        }
+        
+        // Test cases
+        const testTexts = [
+            'מהו השם של הבירה של ישראל?', // Hebrew
+            'ما هي عاصمة مصر؟', // Arabic
+            'What is the capital of France?', // English
+            'מהו השם של הבירה של France?' // Mixed
+        ];
+        
+        testTexts.forEach((text, index) => {
+            console.log(`Test ${index + 1}: "${text}" -> Direction: ${getTextDirection(text)}`);
+        });
+    </script>
+</body>
+</html>

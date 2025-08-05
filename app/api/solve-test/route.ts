@@ -1,10 +1,9 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from 'next/server';
 import { ChatOpenAI } from '@langchain/openai';
 import {
   EXTRACTION_SYSTEM_PROMPT,
-  EXTRACTION_USER_PROMPT,
-  SOLVING_SYSTEM_PROMPT,
-  SOLVING_USER_PROMPT
+  EXTRACTION_USER_PROMPT
 } from './prompts';
 
 interface Answer {
@@ -76,8 +75,9 @@ async function handlePdfFile(buffer: Buffer): Promise<NextResponse> {
     // Create parser instance
     const pdfParser = new PDFParser();
     
-    // Process PDF page by page using streaming events
-    const { pages, totalPages } = await new Promise<{pages: PageData[], totalPages: number}>((resolve, reject) => {
+    // Process PDF page by page using streaming events with timeout
+    const { pages, totalPages } = await Promise.race([
+      new Promise<{pages: PageData[], totalPages: number}>((resolve, reject) => {
       const pages: PageData[] = [];
       let currentPageNumber = 0;
       let totalPages = 0;
@@ -127,15 +127,19 @@ async function handlePdfFile(buffer: Buffer): Promise<NextResponse> {
         }
       });
       
-      // Start parsing the buffer
-      console.log('Starting page-by-page PDF parsing...');
-      pdfParser.parseBuffer(buffer);
-    });
+        // Start parsing the buffer
+        console.log('Starting page-by-page PDF parsing...');
+        pdfParser.parseBuffer(buffer);
+      }),
+      // Timeout after 2 minutes
+      new Promise<never>((_, reject) => 
+        setTimeout(() => reject(new Error('PDF parsing timeout - file is too complex or large')), 120000)
+      )
+    ]);
     
     console.log(`PDF processed successfully: ${totalPages} pages, processing questions page by page...`);
     
-    // Process each page with AI to extract questions
-    const allQuestions: any[] = [];
+    // Process each page with AI to extract questions using async pipeline
     
     // Filter out empty pages
     const validPages = pages.filter(page => page.pageText.trim().length > 0);
@@ -149,6 +153,15 @@ async function handlePdfFile(buffer: Buffer): Promise<NextResponse> {
 
     console.log(`Processing ${validPages.length} valid pages for question extraction...`);
     
+    // Create async pipeline for concurrent extraction and solving
+    const questionQueue: any[] = [];
+    const solvedAnswers: Answer[] = [];
+    let extractionComplete = false;
+    let totalExtractedQuestions = 0;
+    
+    // Start the solving agent as a separate async process
+    const solvingProcess = startSolvingAgent(questionQueue, solvedAnswers, () => extractionComplete && questionQueue.length === 0);
+    
     // Process pages in batches to manage context window and API limits
     const batchSize = 3; // Process 3 pages at a time to stay within context limits
     const pageBatches = [];
@@ -157,9 +170,9 @@ async function handlePdfFile(buffer: Buffer): Promise<NextResponse> {
       pageBatches.push(validPages.slice(i, i + batchSize));
     }
     
-    console.log(`Created ${pageBatches.length} batches for processing`);
+    console.log(`Created ${pageBatches.length} batches for processing with async pipeline`);
     
-    // Process each batch of pages
+    // Process each batch of pages with enhanced error handling (ASYNC EXTRACTION)
     for (let batchIndex = 0; batchIndex < pageBatches.length; batchIndex++) {
       const batch = pageBatches[batchIndex];
       console.log(`Processing batch ${batchIndex + 1}/${pageBatches.length} with ${batch.length} pages...`);
@@ -249,8 +262,10 @@ ${batchText}`;
               points: q.points || null,
             }));
             
-            allQuestions.push(...processedQuestions);
-            console.log(`Added ${processedQuestions.length} questions from batch ${batchIndex + 1}`);
+            // Add questions to async queue for immediate processing by solve agent
+            questionQueue.push(...processedQuestions);
+            totalExtractedQuestions += processedQuestions.length;
+            console.log(`Batch ${batchIndex + 1}: Added ${processedQuestions.length} questions to processing queue (Total: ${totalExtractedQuestions})`);
           }
           
         } catch (parseError) {
@@ -263,83 +278,82 @@ ${batchText}`;
         // Continue with next batch
       }
       
-      // Add delay between batches to respect API rate limits
+      // Add delay between batches to respect API rate limits and manage memory
       if (batchIndex < pageBatches.length - 1) {
         await new Promise(resolve => setTimeout(resolve, 1000));
+        // Force garbage collection if available
+        if (global.gc) {
+          global.gc();
+        }
       }
     }
     
-    console.log(`Question extraction completed. Found ${allQuestions.length} questions total.`);
+    // Mark extraction as complete
+    extractionComplete = true;
+    console.log(`Question extraction completed. Found ${totalExtractedQuestions} questions total.`);
     
-    if (allQuestions.length === 0) {
+    if (totalExtractedQuestions === 0) {
       return NextResponse.json({
         success: false,
         error: 'No questions could be identified in the PDF. Please ensure the PDF contains clear test questions.'
       }, { status: 400 });
     }
 
-    // Now solve all extracted questions
-    console.log(`Starting question solving for ${allQuestions.length} questions...`);
+    // Wait for all solving to complete
+    console.log(`Waiting for solve agent to complete processing ${totalExtractedQuestions} questions...`);
+    await solvingProcess;
     
-    const solvingLLM = new ChatOpenAI({
-      model: 'gpt-4o-mini',
-      temperature: 0,
-      apiKey: process.env.OPENAI_API_KEY,
-      modelKwargs: {
-        response_format: { type: "json_object" }
-      }
-    });
-
-    const solvingResponse = await solvingLLM.invoke([
-      {
-        role: 'system',
-        content: SOLVING_SYSTEM_PROMPT
-      },
-      {
-        role: 'user',
-        content: SOLVING_USER_PROMPT({
-          questions: allQuestions,
-          document_info: {
-            title: "PDF Test Document",
-            total_questions: allQuestions.length.toString(),
-            total_pages: totalPages.toString(),
-            test_type: "general"
-          }
-        })
-      }
-    ]);
-
-    const solvedAnswers = solvingResponse.content as string;
-    console.log('Solved PDF answers:', solvedAnswers);
-
-    // Parse and process solved answers
-    const answersData = JSON.parse(solvedAnswers);
-    const answers = processAnswers(answersData);
-    
-    if (answers.length === 0) {
+    if (solvedAnswers.length === 0) {
       throw new Error('No valid answers generated');
     }
     
-    console.log(`Successfully processed PDF answers: ${answers.length} questions solved`);
+    console.log(`Successfully processed PDF answers: ${solvedAnswers.length} questions solved`);
 
     return NextResponse.json({
       success: true,
-      answers,
+      answers: solvedAnswers,
       metadata: {
         total_pages: totalPages,
-        questions_found: allQuestions.length,
-        answers_generated: answers.length
+        questions_found: totalExtractedQuestions,
+        answers_generated: solvedAnswers.length
       }
     });
 
   } catch (error) {
     console.error('Error processing PDF:', error);
+    
+    // Determine error type and provide specific feedback
+    let errorMessage = 'Failed to process PDF file.';
+    
+    if (error instanceof Error) {
+      if (error.message.includes('timeout')) {
+        errorMessage = 'PDF processing timed out. The file is too large or complex. Please try a smaller file or convert to images.';
+      } else if (error.message.includes('memory') || error.message.includes('heap')) {
+        errorMessage = 'PDF file is too large to process. Please try a smaller file or split it into multiple files.';
+      } else if (error.message.includes('parsing')) {
+        errorMessage = 'PDF file appears to be corrupted or uses an unsupported format. Please try converting it to images.';
+      } else {
+        errorMessage = `PDF processing error: ${error.message}`;
+      }
+    }
+    
     return NextResponse.json({
       success: false,
-      error: 'Failed to process PDF file. Please try again or use an image file instead.'
+      error: errorMessage
     }, { status: 500 });
   }
 }
+
+// Configure API route for large responses and longer execution time
+export const config = {
+  api: {
+    responseLimit: '50mb',
+    bodyParser: {
+      sizeLimit: '50mb',
+    },
+  },
+  maxDuration: 300, // 5 minutes
+};
 
 export async function POST(request: NextRequest) {
   try {
@@ -360,7 +374,25 @@ export async function POST(request: NextRequest) {
 
     // Handle PDF files
     if (mimeType === 'application/pdf') {
-      return await handlePdfFile(buffer);
+      console.log('Processing PDF file:', file.name, 'Size:', buffer.length, 'bytes');
+      
+      // Check file size limit (50MB)
+      if (buffer.length > 50 * 1024 * 1024) {
+        return NextResponse.json({
+          success: false,
+          error: 'PDF file is too large. Please use a file smaller than 50MB.'
+        }, { status: 413 });
+      }
+      
+      try {
+        return await handlePdfFile(buffer);
+      } catch (error) {
+        console.error('PDF processing failed:', error);
+        return NextResponse.json({
+          success: false,
+          error: 'Failed to process PDF file. The file might be corrupted or contain unsupported content.'
+        }, { status: 500 });
+      }
     }
 
     // Handle image files (existing logic)
@@ -444,34 +476,9 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // Step 2: Solve questions directly
-      console.log('Step 2: Solving questions...');
-      const solvingLLM = new ChatOpenAI({
-        model: 'gpt-4o-mini',
-        temperature: 0,
-        apiKey: process.env.OPENAI_API_KEY,
-        modelKwargs: {
-          response_format: { type: "json_object" }
-        }
-      });
-
-      const solvingResponse = await solvingLLM.invoke([
-        {
-          role: 'system',
-          content: SOLVING_SYSTEM_PROMPT
-        },
-        {
-          role: 'user',
-          content: SOLVING_USER_PROMPT(questionsData)
-        }
-      ]);
-
-      const solvedAnswers = solvingResponse.content as string;
-      console.log('Solved answers:', solvedAnswers);
-
-      // Parse and process solved answers
-      const answersData = JSON.parse(solvedAnswers);
-      answers = processAnswers(answersData);
+      // Step 2: Solve questions individually using async processing
+      console.log('Step 2: Solving questions individually...');
+      answers = await solveQuestionsIndividually(questionsData.questions);
       
       if (answers.length === 0) {
         throw new Error('No valid answers generated');
@@ -505,21 +512,6 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// Process and validate answers from the solving agent
-function processAnswers(answersData: any): Answer[] {
-  let answers: Answer[] = [];
-  
-  if (answersData.answers && Array.isArray(answersData.answers)) {
-    answers = answersData.answers.map((ans: any) => ({
-      question: ans.question || "Unknown question",
-      answer: ans.answer || "No answer provided",
-      confidence: Math.min(Math.max(ans.confidence || 0.5, 0.1), 0.95),
-      reasoning: ans.reasoning || "No reasoning provided"
-    }));
-  }
-  
-  return answers;
-}
 
 // Fallback function to extract questions manually when JSON parsing fails
 function extractQuestionsManually(response: string): any[] {
@@ -574,4 +566,174 @@ function extractQuestionsManually(response: string): any[] {
   }
   
   return questions;
+}
+
+// Async solving agent that processes questions from queue as they become available
+async function startSolvingAgent(
+  questionQueue: any[], 
+  solvedAnswers: Answer[], 
+  isComplete: () => boolean
+): Promise<void> {
+  console.log('🚀 Starting async solving agent...');
+  
+  const processedQuestions = new Set<string>();
+  let processedCount = 0;
+  
+  while (!isComplete() || questionQueue.length > 0) {
+    // Check if there are questions to process
+    if (questionQueue.length === 0) {
+      // Wait a bit for more questions to arrive
+      await new Promise(resolve => setTimeout(resolve, 100));
+      continue;
+    }
+    
+    // Take questions from queue (up to 3 at a time to manage context window)
+    const batchSize = Math.min(3, questionQueue.length);
+    const questionsToProcess = questionQueue.splice(0, batchSize);
+    
+    // Filter out duplicates
+    const uniqueQuestions = questionsToProcess.filter(q => {
+      const questionId = `${q.question_number}-${q.question.substring(0, 50)}`;
+      if (processedQuestions.has(questionId)) {
+        return false;
+      }
+      processedQuestions.add(questionId);
+      return true;
+    });
+    
+    if (uniqueQuestions.length === 0) continue;
+    
+    console.log(`🧠 Solving batch of ${uniqueQuestions.length} questions (Queue: ${questionQueue.length} remaining)`);
+    
+    // Process this batch of questions in parallel
+    const batchPromises = uniqueQuestions.map((question, index) => 
+      solveIndividualQuestionOptimized(question, processedCount + index)
+    );
+    
+    try {
+      const batchResults = await Promise.all(batchPromises);
+      solvedAnswers.push(...batchResults);
+      processedCount += batchResults.length;
+      
+      console.log(`✅ Completed ${batchResults.length} questions (Total solved: ${processedCount})`);
+    } catch (error) {
+      console.error('Error in solving batch:', error);
+      // Continue processing other questions even if some fail
+    }
+    
+    // Brief pause to prevent overwhelming the API
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  
+  console.log(`🎯 Solving agent completed. Total questions solved: ${processedCount}`);
+}
+
+// Optimized individual question solver with reduced context
+async function solveIndividualQuestionOptimized(question: any, index: number): Promise<Answer> {
+  try {
+    const solvingLLM = new ChatOpenAI({
+      model: 'gpt-4o-mini', // Use mini model for faster, cheaper processing
+      temperature: 0,
+      apiKey: process.env.OPENAI_API_KEY,
+      modelKwargs: {
+        response_format: { type: "json_object" }
+      }
+    });
+
+    // Create concise prompt to minimize context window usage
+    const optimizedPrompt = createOptimizedSolvingPrompt(question);
+
+    const solvingResponse = await solvingLLM.invoke([
+      {
+        role: 'system',
+        content: `You are an expert test solver. Solve questions accurately and concisely. Always respond in JSON format: {"answer": "your answer", "confidence": 0.95, "reasoning": "brief explanation"}`
+      },
+      {
+        role: 'user',
+        content: optimizedPrompt
+      }
+    ]);
+
+    const solvedAnswer = solvingResponse.content as string;
+    
+    // Parse the individual answer
+    let answerData;
+    try {
+      answerData = JSON.parse(solvedAnswer);
+    } catch (parseError) {
+      console.error(`Failed to parse answer for question ${index + 1}:`, parseError);
+      return {
+        question: question.question || `Question ${index + 1}`,
+        answer: "Unable to process this question",
+        confidence: 0.1,
+        reasoning: "Failed to parse AI response"
+      };
+    }
+
+    return {
+      question: question.question || `Question ${index + 1}`,
+      answer: answerData.answer || "No answer provided",
+      confidence: Math.min(Math.max(answerData.confidence || 0.5, 0.1), 0.95),
+      reasoning: answerData.reasoning || "No reasoning provided"
+    };
+
+  } catch (error) {
+    console.error(`Error solving question ${index + 1}:`, error);
+    return {
+      question: question.question || `Question ${index + 1}`,
+      answer: "Error processing this question",
+      confidence: 0.1,
+      reasoning: "An error occurred while processing this question"
+    };
+  }
+}
+
+// Create optimized prompt with minimal context to save tokens
+function createOptimizedSolvingPrompt(question: any): string {
+  let prompt = `Question: ${question.question}`;
+  
+  if (question.choices && Array.isArray(question.choices)) {
+    prompt += `\nChoices: ${question.choices.join(', ')}`;
+  }
+  
+  if (question.type) {
+    prompt += `\nType: ${question.type}`;
+  }
+  
+  // Only include context if it's short (to save tokens)
+  if (question.context && question.context.length < 200) {
+    prompt += `\nContext: ${question.context}`;
+  }
+  
+  return prompt;
+}
+
+// Function to solve individual questions asynchronously with batching (LEGACY - keeping for image processing)
+async function solveQuestionsIndividually(questions: any[]): Promise<Answer[]> {
+  console.log(`Processing ${questions.length} questions individually with async execution...`);
+  
+  // Process questions in smaller batches to manage memory and API limits
+  const batchSize = 5; // Process 5 questions at a time
+  const results: Answer[] = [];
+  
+  for (let i = 0; i < questions.length; i += batchSize) {
+    const batch = questions.slice(i, i + batchSize);
+    console.log(`Processing question batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(questions.length / batchSize)}`);
+    
+    const batchResults = await Promise.all(
+      batch.map((question, batchIndex) => solveIndividualQuestionOptimized(question, i + batchIndex))
+    );
+    
+    results.push(...batchResults);
+    
+    // Add delay and garbage collection between batches
+    if (i + batchSize < questions.length) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      if (global.gc) {
+        global.gc();
+      }
+    }
+  }
+  
+  return results;
 }

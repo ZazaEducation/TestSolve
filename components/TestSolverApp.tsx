@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Upload, Camera, Loader2, CheckCircle, AlertCircle, FileText } from 'lucide-react';
 import Image from 'next/image';
+import { getTextDirection } from '../utils/languageDetection';
 
 interface Answer {
   question: string;
@@ -22,12 +23,22 @@ export default function TestSolverApp() {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [results, setResults] = useState<ProcessingResult | null>(null);
+  const [processingStatus, setProcessingStatus] = useState<string>('');
 
   const handleImageSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
+      // Check file size (50MB limit)
+      const maxSize = 50 * 1024 * 1024; // 50MB in bytes
+      if (file.size > maxSize) {
+        alert('File is too large. Please select a file smaller than 50MB.');
+        event.target.value = ''; // Clear the file input
+        return;
+      }
+      
       setSelectedImage(file);
       setResults(null);
+      setProcessingStatus(''); // Clear any previous status
       
       // Only create preview for image files
       if (file.type.startsWith('image/')) {
@@ -47,24 +58,84 @@ export default function TestSolverApp() {
     if (!selectedImage) return;
 
     setIsProcessing(true);
+    setProcessingStatus('Uploading and analyzing your test...');
+    setResults(null);
+    
     try {
       const formData = new FormData();
       formData.append('image', selectedImage);
 
+      // Update status based on file type
+      if (selectedImage.type === 'application/pdf') {
+        setProcessingStatus('Processing PDF - starting async extraction and solving pipeline...');
+      } else {
+        setProcessingStatus('Extracting questions from your test...');
+      }
+      
+      // Create AbortController for timeout handling
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+      }, 300000); // 5 minute timeout
+      
       const response = await fetch('/api/solve-test', {
         method: 'POST',
         body: formData,
+        signal: controller.signal,
       });
+      
+      clearTimeout(timeoutId);
 
+      if (!response.ok) {
+        // Try to get error message from response
+        let errorMessage = `Server error (${response.status})`;
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.error || errorMessage;
+        } catch {
+          // If can't parse JSON, use status text
+          errorMessage = response.statusText || errorMessage;
+        }
+        throw new Error(errorMessage);
+      }
+
+      if (selectedImage.type === 'application/pdf') {
+        setProcessingStatus('PDF processed - extraction and solving completed concurrently...');
+      } else {
+        setProcessingStatus('Processing individual questions asynchronously...');
+      }
+      
       const result = await response.json();
+      
+      if (result.success) {
+        setProcessingStatus(`Successfully solved ${result.answers?.length || 0} questions!`);
+      }
+      
       setResults(result);
-    } catch {
+    } catch (error) {
+      console.error('Upload error:', error);
+      
+      let errorMessage = 'Failed to process file. Please try again.';
+      
+      if (error instanceof Error) {
+        if (error.name === 'AbortError') {
+          errorMessage = 'Processing timed out. The file might be too large or complex. Please try a smaller file.';
+        } else if (error.message.includes('Failed to fetch')) {
+          errorMessage = 'Network error. Please check your internet connection and try again.';
+        } else {
+          errorMessage = error.message;
+        }
+      }
+      
       setResults({
         success: false,
-        error: 'Failed to process image. Please try again.',
+        error: errorMessage,
       });
+      setProcessingStatus('');
     } finally {
       setIsProcessing(false);
+      // Clear status after a delay
+      setTimeout(() => setProcessingStatus(''), 3000);
     }
   };
 
@@ -72,6 +143,7 @@ export default function TestSolverApp() {
     setSelectedImage(null);
     setImagePreview(null);
     setResults(null);
+    setProcessingStatus('');
   };
 
   return (
@@ -95,7 +167,10 @@ export default function TestSolverApp() {
                 </p>
                 <p className="text-sm text-gray-400 mb-4">
                   ✓ Images: Screenshots, photos of tests, handwritten questions<br/>
-                  ✓ PDFs: Digital tests, exams, quizzes, homework assignments
+                  ✓ PDFs: Digital tests, exams, quizzes, homework assignments (max 50MB)
+                </p>
+                <p className="text-xs text-amber-600 mb-4">
+                  Note: Large PDF files may take several minutes to process
                 </p>
                 <label className="cursor-pointer">
                   <input
@@ -103,6 +178,7 @@ export default function TestSolverApp() {
                     accept="image/*,application/pdf"
                     onChange={handleImageSelect}
                     className="hidden"
+                    max="52428800"
                   />
                   <span className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors">
                     <Camera className="w-4 h-4 mr-2" />
@@ -153,6 +229,14 @@ export default function TestSolverApp() {
                     Reset
                   </button>
                 </div>
+                {processingStatus && (
+                  <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                    <div className="flex items-center">
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin text-blue-600" />
+                      <p className="text-blue-700 text-sm">{processingStatus}</p>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -173,16 +257,38 @@ export default function TestSolverApp() {
                         <h4 className="font-medium text-gray-900 mb-2">
                           Question {index + 1}:
                         </h4>
-                        <p className="text-gray-700 mb-3 italic">
+                        <p 
+                          className="text-gray-700 mb-3 italic question-text"
+                          style={{ 
+                            direction: getTextDirection(answer.question),
+                            textAlign: getTextDirection(answer.question) === 'rtl' ? 'right' : 'left'
+                          }}
+                        >
                           &ldquo;{answer.question}&rdquo;
                         </p>
                         <div className="bg-white border border-green-200 rounded p-3">
                           <p className="text-gray-800 font-medium">Answer:</p>
-                          <p className="text-gray-700 mt-1 text-lg font-semibold">{answer.answer}</p>
+                          <p 
+                            className="text-gray-700 mt-1 text-lg font-semibold answer-text"
+                            style={{ 
+                              direction: getTextDirection(answer.answer),
+                              textAlign: getTextDirection(answer.answer) === 'rtl' ? 'right' : 'left'
+                            }}
+                          >
+                            {answer.answer}
+                          </p>
                           {answer.reasoning && (
                             <div className="mt-3 pt-3 border-t border-gray-100">
                               <p className="text-gray-600 text-sm font-medium">Reasoning:</p>
-                              <p className="text-gray-600 text-sm mt-1">{answer.reasoning}</p>
+                              <p 
+                                className="text-gray-600 text-sm mt-1 answer-text"
+                                style={{ 
+                                  direction: getTextDirection(answer.reasoning),
+                                  textAlign: getTextDirection(answer.reasoning) === 'rtl' ? 'right' : 'left'
+                                }}
+                              >
+                                {answer.reasoning}
+                              </p>
                             </div>
                           )}
                         </div>

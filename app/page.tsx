@@ -9,7 +9,7 @@ export default function Home() {
             AI Test Solver
           </h1>
           <p className="text-gray-600">
-            Upload photos of test questions and get instant AI-powered answers
+            Upload photos of test questions and get instant AI-powered answers with RTL language support
           </p>
         </div>
         <TestSolverApp />
