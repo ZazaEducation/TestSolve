@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "AI Test Solver",
-  description: "Upload photos of test questions and get instant AI-powered answers with RTL language support",
+  description: "Why use your brain when you can use AI",
   icons: {
     icon: "/favicon.ico",
   },
